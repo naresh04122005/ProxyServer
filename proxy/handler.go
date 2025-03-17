@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -318,32 +319,41 @@ func (p *ProxyHandler) cacheResponse(key string, resp *http.Response, body []byt
 
 // calculateTTL calculates the TTL from Cache-Control header
 func (p *ProxyHandler) calculateTTL(resp *http.Response) time.Duration {
-	// Check for Cache-Control: max-age
-	cacheControl := resp.Header.Get("Cache-Control")
-	if cacheControl != "" {
-		directives := strings.Split(cacheControl, ",")
-		for _, directive := range directives {
-			directive = strings.TrimSpace(directive)
-			if strings.HasPrefix(directive, "max-age=") {
-				value := strings.TrimPrefix(directive, "max-age=")
-				if seconds, err := time.ParseDuration(value + "s"); err == nil {
-					return seconds
-				}
-			}
-		}
-	}
+    // Check for Cache-Control: max-age
+    cacheControl := resp.Header.Get("Cache-Control")
+    if cacheControl != "" {
+        directives := strings.Split(cacheControl, ",")
+        for _, directive := range directives {
+            directive = strings.TrimSpace(directive)
+            if strings.HasPrefix(directive, "max-age=") {
+                value := strings.TrimPrefix(directive, "max-age=")
+                if seconds, err := strconv.Atoi(value); err == nil {
+                    return time.Duration(seconds) * time.Second
+                }
+            }
+        }
+    }
 
-	// Check for Expires header
-	if expires := resp.Header.Get("Expires"); expires != "" {
-		if expiresTime, err := time.Parse(time.RFC1123, expires); err == nil {
-			return time.Until(expiresTime)
-		}
-	}
+    // Check for Expires header
+    if expires := resp.Header.Get("Expires"); expires != "" {
+        // Try multiple time formats that might be used in HTTP headers
+        formats := []string{
+            time.RFC1123,
+            time.RFC1123Z,
+            "Mon, 02-Jan-2006 15:04:05 MST",
+            "Monday, 02-Jan-2006 15:04:05 MST",
+        }
+        
+        for _, format := range formats {
+            if expiresTime, err := time.Parse(format, expires); err == nil {
+                return time.Until(expiresTime)
+            }
+        }
+    }
 
-	// Return default TTL from config
-	return time.Duration(p.config.CacheTTL) * time.Second
+    // Return default TTL from config
+    return time.Duration(p.config.CacheTTL) * time.Second
 }
-
 // serializeResponse serializes a CachedResponse to a byte array
 func (p *ProxyHandler) serializeResponse(resp *CachedResponse) ([]byte, error) {
 	// For simplicity, we'll use a simple format:
