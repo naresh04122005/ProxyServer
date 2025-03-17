@@ -9,9 +9,10 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
 	"github.com/Jovial-Kanwadia/proxy-server/cache"
 	"github.com/Jovial-Kanwadia/proxy-server/config"
-	"github.com/Jovial-Kanwadia/proxy-server/proxy" // Add proxy import
+	"github.com/Jovial-Kanwadia/proxy-server/proxy"
 )
 
 func main() {
@@ -32,8 +33,11 @@ func main() {
 	fmt.Printf("Initialized LRU cache with capacity: %d\n", lruCache.Capacity())
 
 	// Create proxy handler
-	handler := proxy.NewProxyHandler(lruCache, cfg) // Replace with ProxyHandler
-
+	proxyHandler := proxy.NewProxyHandler(lruCache, cfg)
+	
+	// Apply middleware chain
+	handler := proxy.CreateMiddlewareChain(proxyHandler, cfg)
+	
 	// Create server with timeouts
 	server := &http.Server{
 		Addr:           fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
@@ -46,7 +50,7 @@ func main() {
 
 	// Start server in goroutine to not block
 	go func() {
-		fmt.Printf("Starting server on %s:%d\n", cfg.Host, cfg.Port)
+		fmt.Printf("Starting proxy server on %s:%d\n", cfg.Host, cfg.Port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Error starting server: %v", err)
 		}
@@ -63,6 +67,9 @@ func main() {
 	// Create shutdown context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	// Shutdown the proxy handler (which will stop the worker pool)
+	proxyHandler.Shutdown()
 
 	// Shutdown server
 	if err := server.Shutdown(ctx); err != nil {

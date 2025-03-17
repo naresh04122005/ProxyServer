@@ -1,12 +1,14 @@
 package proxy
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"strings"
 	"time"
+
 	"github.com/Jovial-Kanwadia/proxy-server/cache"
 	"github.com/Jovial-Kanwadia/proxy-server/config"
 )
@@ -17,6 +19,7 @@ type ProxyHandler struct {
 	client     *http.Client
 	config     *config.Config
 	cacheables map[string]bool // Map of cacheable HTTP methods
+	workerPool *WorkerPool     // Worker pool for concurrent request handling
 }
 
 // NewProxyHandler creates a new ProxyHandler
@@ -39,16 +42,31 @@ func NewProxyHandler(cache cache.Cache, cfg *config.Config) *ProxyHandler {
 		http.MethodHead: true,
 	}
 
+	// Create a new worker pool
+	workerPool := NewWorkerPool(cfg.MaxConnections)
+
 	return &ProxyHandler{
 		cache:      cache,
 		client:     client,
 		config:     cfg,
 		cacheables: cacheables,
+		workerPool: workerPool,
 	}
 }
 
 // ServeHTTP implements the http.Handler interface
 func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Create a handler for the request
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p.handleRequest(w, r)
+	})
+
+	// Enqueue the request to be processed by a worker
+	p.workerPool.Enqueue(w, r, handler)
+}
+
+// handleRequest processes a single HTTP request
+func (p *ProxyHandler) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// Log the request
 	log.Printf("Proxying request: %s %s", r.Method, r.URL.String())
 
@@ -74,15 +92,30 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Cache hit for %s", cacheKey)
 			
 			// Parse the cached response
-			response := item.Value
-			
-			// Write headers from cached response
-			p.writeCachedHeaders(w, response)
-			
-			// Write body from cached response
-			p.writeCachedBody(w, response)
-			
-			return
+			cachedResp, err := p.parseCachedResponse(item.Value)
+			if err != nil {
+				log.Printf("Error parsing cached response: %v", err)
+			} else {
+				// Write headers from cached response
+				for key, values := range cachedResp.Header {
+					for _, value := range values {
+						w.Header().Add(key, value)
+					}
+				}
+				
+				// Add cache header
+				w.Header().Set("X-Cache", "HIT")
+				
+				// Set status code
+				w.WriteHeader(cachedResp.StatusCode)
+				
+				// Write body
+				if _, err := w.Write(cachedResp.Body); err != nil {
+					log.Printf("Error writing cached response body: %v", err)
+				}
+				
+				return
+			}
 		}
 		
 		log.Printf("Cache miss for %s", cacheKey)
@@ -112,6 +145,7 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Add proxy headers
 	w.Header().Set("X-Proxy-Server", "Go-Proxy-Server/1.0")
+	w.Header().Set("X-Cache", "MISS")
 
 	// Set status code
 	w.WriteHeader(resp.StatusCode)
@@ -134,6 +168,13 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Write response body to client
 	if _, err := w.Write(body); err != nil {
 		log.Printf("Error writing response body: %v", err)
+	}
+}
+
+// Shutdown gracefully shuts down the proxy handler
+func (p *ProxyHandler) Shutdown() {
+	if p.workerPool != nil {
+		p.workerPool.Stop()
 	}
 }
 
@@ -168,9 +209,11 @@ func (p *ProxyHandler) isCacheable(r *http.Request) bool {
 
 	// Don't cache if there's a Cache-Control: no-store header
 	cacheControl := r.Header.Get("Cache-Control")
-	return !strings.Contains(cacheControl, "no-store")
+	if strings.Contains(cacheControl, "no-store") {
+		return false
+	}
 
-	// return true
+	return true
 }
 
 // isResponseCacheable checks if the response can be cached
@@ -229,21 +272,133 @@ func (p *ProxyHandler) cloneRequest(r *http.Request) (*http.Request, error) {
 	return proxyReq, nil
 }
 
-// We'll implement these methods in the next steps
-func (p *ProxyHandler) writeCachedHeaders(w http.ResponseWriter, response []byte) {
-	// This will be implemented in the next step
-	// For now, set a placeholder header
-	w.Header().Set("X-Cache", "HIT")
+// CachedResponse represents a cached HTTP response
+type CachedResponse struct {
+	StatusCode int
+	Header     http.Header
+	Body       []byte
 }
 
-func (p *ProxyHandler) writeCachedBody(w http.ResponseWriter, response []byte) {
-	// This will be implemented in the next step
-	// For now, write the response directly
-	w.Write(response)
-}
-
+// cacheResponse stores a response in the cache
 func (p *ProxyHandler) cacheResponse(key string, resp *http.Response, body []byte) {
-	// This will be implemented in the next step
-	// For now, just log that we would cache this
-	log.Printf("Would cache response for %s (%d bytes)", key, len(body))
+	// Determine cache TTL from Cache-Control header
+	ttl := p.calculateTTL(resp)
+	if ttl <= 0 {
+		// Use default TTL from config
+		ttl = time.Duration(p.config.CacheTTL) * time.Second
+	}
+
+	// Serialize the response
+	cachedResp := &CachedResponse{
+		StatusCode: resp.StatusCode,
+		Header:     resp.Header.Clone(),
+		Body:       body,
+	}
+
+	serialized, err := p.serializeResponse(cachedResp)
+	if err != nil {
+		log.Printf("Error serializing response: %v", err)
+		return
+	}
+
+	// Store in cache
+	p.cache.Set(key, serialized, ttl)
+	log.Printf("Cached response for %s (%d bytes) with TTL %v", key, len(serialized), ttl)
+}
+
+// calculateTTL calculates the TTL from Cache-Control header
+func (p *ProxyHandler) calculateTTL(resp *http.Response) time.Duration {
+	// Check for Cache-Control: max-age
+	cacheControl := resp.Header.Get("Cache-Control")
+	if cacheControl != "" {
+		directives := strings.Split(cacheControl, ",")
+		for _, directive := range directives {
+			directive = strings.TrimSpace(directive)
+			if strings.HasPrefix(directive, "max-age=") {
+				value := strings.TrimPrefix(directive, "max-age=")
+				if seconds, err := time.ParseDuration(value + "s"); err == nil {
+					return seconds
+				}
+			}
+		}
+	}
+
+	// Check for Expires header
+	if expires := resp.Header.Get("Expires"); expires != "" {
+		if expiresTime, err := time.Parse(time.RFC1123, expires); err == nil {
+			return time.Until(expiresTime)
+		}
+	}
+
+	// Return default TTL from config
+	return time.Duration(p.config.CacheTTL) * time.Second
+}
+
+// serializeResponse serializes a CachedResponse to a byte array
+func (p *ProxyHandler) serializeResponse(resp *CachedResponse) ([]byte, error) {
+	// For simplicity, we'll use a simple format:
+	// - First line: Status code
+	// - Headers (one per line, key: value)
+	// - Empty line
+	// - Body
+	var buf bytes.Buffer
+
+	// Write status code
+	fmt.Fprintf(&buf, "%d\r\n", resp.StatusCode)
+
+	// Write headers
+	for key, values := range resp.Header {
+		for _, value := range values {
+			fmt.Fprintf(&buf, "%s: %s\r\n", key, value)
+		}
+	}
+
+	// Empty line to separate headers from body
+	buf.WriteString("\r\n")
+
+	// Write body
+	buf.Write(resp.Body)
+
+	return buf.Bytes(), nil
+}
+
+// parseCachedResponse deserializes a byte array to a CachedResponse
+func (p *ProxyHandler) parseCachedResponse(data []byte) (*CachedResponse, error) {
+	// Split data into headers and body
+	parts := bytes.SplitN(data, []byte("\r\n\r\n"), 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid cached response format")
+	}
+
+	// Parse headers
+	headerLines := bytes.Split(parts[0], []byte("\r\n"))
+	if len(headerLines) < 1 {
+		return nil, fmt.Errorf("invalid cached response headers")
+	}
+
+	// Parse status code
+	statusCode := 0
+	if _, err := fmt.Sscanf(string(headerLines[0]), "%d", &statusCode); err != nil {
+		return nil, fmt.Errorf("invalid status code: %v", err)
+	}
+
+	// Parse headers
+	headers := make(http.Header)
+	for _, line := range headerLines[1:] {
+		headerParts := bytes.SplitN(line, []byte(": "), 2)
+		if len(headerParts) == 2 {
+			key := string(headerParts[0])
+			value := string(headerParts[1])
+			headers.Add(key, value)
+		}
+	}
+
+	// Create response
+	resp := &CachedResponse{
+		StatusCode: statusCode,
+		Header:     headers,
+		Body:       parts[1],
+	}
+
+	return resp, nil
 }
