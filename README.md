@@ -1,13 +1,32 @@
-# Proxy Server
+# 🛡️ Go Multithreaded Proxy Server
 
-## Introduction
+Welcome to the Go Proxy Server project! This multithreaded proxy server is built with high performance and flexibility in mind. It not only forwards HTTP requests and responses but also enhances them with powerful features such as caching, domain filtering, rate limiting, and much more.
 
-This guide provides detailed instructions for testing a Go-based HTTP proxy server implementation. The proxy server handles forwarding requests, caching responses, and includes additional features like domain filtering, compression, and rate limiting. We'll walk through the setup process and demonstrate how to test each feature using command-line tools in WSL.
+## 📖 Project Overview
+The Go Proxy Server is designed to serve as an intermediary between clients and target web servers. Its robust architecture supports:
 
-## Project Setup
+- Request Forwarding: Transparently passes client requests to destination servers and returns responses.
+- Response Caching: Stores frequently requested data to boost performance.
+- Domain Filtering: Allows administrators to restrict access only to approved domains.
+- Method Handling: Optimizes caching for idempotent methods (GET) while forwarding non-cacheable methods (POST, PUT) without caching.
+- CORS & Compression: Adds necessary CORS headers and supports gzip compression to reduce bandwidth.
+- Security Enhancements: Includes standard security headers to safeguard client interactions.
+- Rate Limiting & Worker Pools: Manages incoming connections efficiently to prevent overload.
+- Custom Configuration: Easily tailor server behavior via a JSON configuration file.
+- Advanced Chaining: Supports chaining multiple proxy instances for complex network architectures.
+- Robust Error Handling: Gracefully handles invalid requests and network issues.
 
-Before beginning the testing process, you'll need to set up the proxy server in your WSL environment:
+This project is ideal for developers looking for a customizable proxy solution with enhanced performance and security.
 
+## 🚀 Getting Started
+
+Clone the repo to your local machine:
+```bash
+git clone https://github.com/Jovial-Kanwadia/ProxyServer.git
+cd go-proxy-server
+```
+
+Build the project using Go:
 ```bash
 # Navigate to your project directory
 cd /path/to/your/proxy-server
@@ -15,13 +34,12 @@ cd /path/to/your/proxy-server
 # Build the project
 go build -o proxy-server
 
-# Run with default configuration
+# Run the server with default configuration (listens on localhost:8080)
 ./proxy-server
 ```
+Server is now running and accessible at http://localhost:8080 🎉
 
-Once started, the server will be accessible at `localhost:8080` by default.
-
-## Feature Testing
+## ⚙️ Features and Testing
 
 ### 1. Basic Proxy Functionality
 
@@ -32,7 +50,7 @@ The core functionality of the proxy server is to forward HTTP requests to target
 curl -v "http://localhost:8080/?url=http://example.com"
 ```
 
-**Expected Output:**
+**Output:**
 ```
 * Connected to localhost (127.0.0.1) port 8080
 > GET /?url=http://example.com HTTP/1.1
@@ -58,7 +76,7 @@ curl -v "http://localhost:8080/?url=http://example.com"
 curl -v "http://localhost:8080/?url=http://example.com"
 ```
 
-**Expected Output for Second Request:**
+**Output for Second Request:**
 ```
 < HTTP/1.1 200 OK
 < X-Cache: HIT
@@ -87,7 +105,7 @@ curl -v "http://localhost:8080/?url=http://example.com"
 curl -v "http://localhost:8080/?url=http://reddit.com"
 ```
 
-**Expected Output for Disallowed Domain:**
+**Output for Disallowed Domain:**
 ```
 < HTTP/1.1 403 Forbidden
 < Content-Type: text/plain; charset=utf-8
@@ -113,7 +131,7 @@ curl -v -X POST "http://localhost:8080/?url=http://httpbin.org/post"
 curl -v -X PUT "http://localhost:8080/?url=http://httpbin.org/put"
 ```
 
-**Expected Behavior:**
+**Behavior:**
 - GET requests are cached and will show `X-Cache: HIT` on subsequent requests
 - POST and PUT requests are not cached and will always show `X-Cache: MISS`
 
@@ -130,7 +148,7 @@ The proxy server supports Cross-Origin Resource Sharing (CORS) to allow cross-do
 curl -v -X OPTIONS "http://localhost:8080/?url=http://example.com"
 ```
 
-**Expected Output:**
+**Output:**
 ```
 < HTTP/1.1 200 OK
 < Access-Control-Allow-Origin: *
@@ -151,7 +169,7 @@ The proxy server supports content compression to reduce bandwidth usage.
 curl -v -H "Accept-Encoding: gzip" "http://localhost:8080/?url=http://example.com"
 ```
 
-**Expected Output:**
+**Output:**
 ```
 < HTTP/1.1 200 OK
 < Content-Encoding: gzip
@@ -188,7 +206,7 @@ EOF
 curl -v "http://localhost:8081/?url=http://example.com"
 ```
 
-**Expected Output:**
+**Output:**
 ```
 * Connected to localhost (127.0.0.1) port 8081
 > GET /?url=http://example.com HTTP/1.1
@@ -206,7 +224,7 @@ The proxy server adds security headers to responses to enhance client security.
 curl -v "http://localhost:8080/?url=http://example.com" | grep -i "X-"
 ```
 
-**Expected Output:**
+**Output:**
 ```
 X-Content-Type-Options: nosniff
 X-Frame-Options: DENY
@@ -237,7 +255,7 @@ for i in {1..20}; do
 done
 ```
 
-**Expected Output:**
+**Output:**
 After several requests, you should see:
 ```
 < HTTP/1.1 429 Too Many Requests
@@ -270,7 +288,7 @@ sleep 6
 curl -v "http://localhost:8080/?url=http://example.com"
 ```
 
-**Expected Behavior:**
+**Behavior:**
 - Second request: `X-Cache: HIT`
 - Third request: `X-Cache: MISS`
 
@@ -293,7 +311,7 @@ The proxy server uses a worker pool to handle concurrent requests efficiently.
 ab -n 100 -c 20 "http://localhost:8080/?url=http://example.com"
 ```
 
-**Expected Output:**
+**Output:**
 The test should complete with all requests processed, though some may be queued due to the worker pool limit.
 
 **Explanation:**
@@ -313,7 +331,7 @@ curl -v "http://localhost:8080/?url=invalid-url"
 curl -v "http://localhost:8080/?url=http://slowwly.robertomurray.co.uk/delay/3000/url/http://www.google.com"
 ```
 
-**Expected Output:**
+**Output:**
 - Invalid URL: HTTP 400 Bad Request
 - Timeout: HTTP 502 Bad Gateway
 
@@ -337,7 +355,7 @@ The proxy server can be used in a chained configuration for more complex setups.
 curl -v "http://localhost:8081/?url=http://localhost:8080/?url=http://example.com"
 ```
 
-**Expected Behavior:**
+**Behavior:**
 The request should be forwarded through both proxies and return the example.com content.
 
 **Explanation:**
@@ -353,3 +371,6 @@ To monitor the proxy server's behavior during testing, you can capture its logs:
 ```
 
 This will display the logs in the terminal and save them to a file for later analysis.
+
+## 🤝 Contributing
+Contributions are welcome! Please open an issue or submit a pull request if you have ideas for improvements or bug fixes.
