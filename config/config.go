@@ -100,6 +100,7 @@ func (c *Config) ParseFlags() {
 	flag.IntVar(&c.CacheSize, "cache-size", c.CacheSize, "LRU cache size (number of items)")
 	flag.IntVar(&c.CacheTTL, "cache-ttl", c.CacheTTL, "Cache TTL in seconds")
 	flag.IntVar(&c.ProxyTimeout, "proxy-timeout", c.ProxyTimeout, "Proxy timeout in seconds")
+	flag.IntVar(&c.MaxConnections, "max-connections", c.MaxConnections, "Maximum concurrent connections")
 	
 	allowedDomains := flag.String("allowed-domains", "", "Comma-separated list of allowed domains")
 	configFile := flag.String("config", "", "Path to configuration file")

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -67,15 +68,24 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // handleRequest processes a single HTTP request
 func (p *ProxyHandler) handleRequest(w http.ResponseWriter, r *http.Request) {
-	// Log the request
-	log.Printf("Proxying request: %s %s", r.Method, r.URL.String())
-
-	// Check if the request URL is properly formed
-	if r.URL.Scheme == "" || r.URL.Host == "" {
-		// This is likely a direct request to the proxy without the target URL
-		http.Error(w, "Invalid proxy request. URL must include scheme and host.", http.StatusBadRequest)
-		return
-	}
+	// Check if the URL is provided as a query parameter
+    targetURLStr := r.URL.Query().Get("url")
+    
+    if targetURLStr != "" {
+        // Parse the target URL from the query parameter
+        parsedURL, err := url.Parse(targetURLStr)
+        if err != nil {
+            http.Error(w, "Invalid URL format", http.StatusBadRequest)
+            return
+        }
+        
+        // Update the request URL
+        r.URL = parsedURL
+    } else if r.URL.Scheme == "" || r.URL.Host == "" {
+        // This is likely a direct request to the proxy without the target URL
+        http.Error(w, "Invalid proxy request. URL must include scheme and host.", http.StatusBadRequest)
+        return
+    }
 
 	// Check if the domain is allowed
 	if !p.isDomainAllowed(r.URL.Host) {
