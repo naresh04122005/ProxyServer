@@ -22,7 +22,7 @@ This project is ideal for developers looking for a customizable proxy solution w
 
 Clone the repo to your local machine:
 ```bash
-git clone https://github.com/Jovial-Kanwadia/ProxyServer.git
+git clone https://github.com/naresh04122005/ProxyServer.git
 cd go-proxy-server
 ```
 

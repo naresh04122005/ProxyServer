@@ -175,27 +175,23 @@ func (p *ProxyHandler) handleRequest(w http.ResponseWriter, r *http.Request) {
 		// Store response in cache
 		p.cacheResponse(cacheKey, resp, body)
 	}
-
 	// Write response body to client
 	if _, err := w.Write(body); err != nil {
 		log.Printf("Error writing response body: %v", err)
 	}
 }
-
 // Shutdown gracefully shuts down the proxy handler
 func (p *ProxyHandler) Shutdown() {
 	if p.workerPool != nil {
 		p.workerPool.Stop()
 	}
 }
-
 // isDomainAllowed checks if the domain is allowed based on configuration
 func (p *ProxyHandler) isDomainAllowed(host string) bool {
 	// If no allowed domains are specified, all domains are allowed
 	if len(p.config.AllowedDomains) == 0 {
 		return true
 	}
-
 	// Check if the host is in the allowed domains list
 	for _, domain := range p.config.AllowedDomains {
 		if strings.HasSuffix(host, domain) {
@@ -208,23 +204,19 @@ func (p *ProxyHandler) isDomainAllowed(host string) bool {
 
 // isCacheable checks if the request can be cached
 func (p *ProxyHandler) isCacheable(r *http.Request) bool {
-	// Check HTTP method
-	if !p.cacheables[r.Method] {
-		return false
-	}
+    // Check HTTP method
+    if !p.cacheables[r.Method] {
+        return false
+    }
 
-	// Don't cache if there's an Authorization header
-	if r.Header.Get("Authorization") != "" {
-		return false
-	}
+    // Don't cache if there's an Authorization header
+    if r.Header.Get("Authorization") != "" {
+        return false
+    }
 
-	// Don't cache if there's a Cache-Control: no-store header
-	cacheControl := r.Header.Get("Cache-Control")
-	if strings.Contains(cacheControl, "no-store") {
-		return false
-	}
-
-	return true
+    // Don't cache if there's a Cache-Control: no-store header
+    cacheControl := r.Header.Get("Cache-Control")
+    return !strings.Contains(cacheControl, "no-store")
 }
 
 // isResponseCacheable checks if the response can be cached
