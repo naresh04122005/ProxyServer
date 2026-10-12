@@ -1,17 +1,19 @@
 package proxy
 
 import (
+	"bufio"
 	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/Jovial-Kanwadia/proxy-server/config"
+	"github.com/naresh04122005/ProxyServer/config"
 )
 
 // Middleware is a function that wraps an http.Handler
@@ -25,251 +27,197 @@ func Chain(handler http.Handler, middlewares ...Middleware) http.Handler {
 	return handler
 }
 
-// Logger middleware logs HTTP requests
+// Logger middleware logs incoming proxy requests with client IP, method, and destination host
 func Logger() Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
-			
-			// Create a response writer wrapper to capture status code
+
+			// Wrap ResponseWriter to capture status code
 			rw := &responseWriter{
 				ResponseWriter: w,
 				statusCode:     http.StatusOK,
 			}
-			
-			// Call the next handler
+
+			// Call next handler
 			next.ServeHTTP(rw, r)
-			
-			// Log the request details
+
+			// Log request details
 			duration := time.Since(start)
+			targetHost := r.Host
+			if targetHost == "" {
+				targetHost = r.URL.Host
+			}
+
 			log.Printf(
-				"%s %s %s %d %s %s",
+				"[%s] %s -> %s %s | Status: %d | Duration: %s",
 				r.RemoteAddr,
 				r.Method,
+				targetHost,
 				r.URL.Path,
 				rw.statusCode,
 				duration,
-				r.UserAgent(),
 			)
 		})
 	}
 }
 
-// CORS middleware adds CORS headers to responses
-func CORS() Middleware {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Set CORS headers
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-			
-			// Handle preflight requests
-			if r.Method == http.MethodOptions {
-				w.WriteHeader(http.StatusOK)
-				return
-			}
-			
-			// Call the next handler
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// Compress middleware compresses responses using gzip
+// Compress middleware compresses responses using gzip when supported by client
 func Compress() Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Check if the client accepts gzip encoding
-			if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			// Don't compress if client doesn't accept gzip or if it's a CONNECT tunnel
+			if r.Method == http.MethodConnect || !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
 				next.ServeHTTP(w, r)
 				return
 			}
-			
-			// Create a gzip writer
+
+			// Create gzip writer
 			gz, err := gzip.NewWriterLevel(w, gzip.BestSpeed)
 			if err != nil {
 				next.ServeHTTP(w, r)
 				return
 			}
 			defer gz.Close()
-			
-			// Set the Content-Encoding header
+
+			// Set Content-Encoding header
 			w.Header().Set("Content-Encoding", "gzip")
 			w.Header().Del("Content-Length")
-			
-			// Create a gzip response writer
+
+			// Wrap response writer
 			gzw := &gzipResponseWriter{
 				ResponseWriter: w,
 				Writer:         gz,
 			}
-			
-			// Call the next handler with the gzip writer
+
 			next.ServeHTTP(gzw, r)
 		})
 	}
 }
 
-// RateLimit middleware limits the number of requests from a single IP address (for production)
+// RateLimit middleware limits requests per minute per IP address
 func RateLimit(requestsPerMinute int) Middleware {
 	type client struct {
 		count      int
 		lastAccess time.Time
 	}
-	
+
 	var (
 		clients = make(map[string]*client)
 		mu      sync.Mutex
 	)
-	
-	// Start a goroutine to clean up expired clients
+
+	// Background worker to clean up stale IP records every minute
 	go func() {
 		for {
 			time.Sleep(time.Minute)
 			mu.Lock()
-			for ip, client := range clients {
-				if time.Since(client.lastAccess) > time.Minute {
+			for ip, c := range clients {
+				if time.Since(c.lastAccess) > time.Minute {
 					delete(clients, ip)
 				}
 			}
 			mu.Unlock()
 		}
 	}()
-	
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Get the client IP address
+			// Extract client IP (stripping port)
 			ip := r.RemoteAddr
 			if idx := strings.LastIndex(ip, ":"); idx != -1 {
 				ip = ip[:idx]
 			}
-			
-			// Check if the client has exceeded the rate limit
+
 			mu.Lock()
 			c, exists := clients[ip]
 			if !exists {
 				c = &client{count: 0, lastAccess: time.Now()}
 				clients[ip] = c
 			}
-			
+
+			// Reset count if more than a minute has passed
+			if time.Since(c.lastAccess) > time.Minute {
+				c.count = 0
+				c.lastAccess = time.Now()
+			}
+
 			c.count++
 			c.lastAccess = time.Now()
-			
+
 			if c.count > requestsPerMinute {
 				mu.Unlock()
-				http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+				http.Error(w, "Rate limit exceeded. Please slow down.", http.StatusTooManyRequests)
 				return
 			}
 			mu.Unlock()
-			
-			// Call the next handler
+
 			next.ServeHTTP(w, r)
 		})
 	}
 }
 
-
-// responseWriter is a wrapper for http.ResponseWriter that captures the status code
+// responseWriter captures the HTTP status code
 type responseWriter struct {
 	http.ResponseWriter
 	statusCode int
 }
 
-// WriteHeader captures the status code and calls the underlying ResponseWriter's WriteHeader
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.statusCode = code
 	rw.ResponseWriter.WriteHeader(code)
 }
 
-// gzipResponseWriter is a wrapper for http.ResponseWriter that writes to a gzip writer
+func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hj, ok := rw.ResponseWriter.(http.Hijacker); ok {
+		return hj.Hijack()
+	}
+	return nil, nil, fmt.Errorf("underlying ResponseWriter does not support http.Hijacker")
+}
+
+// gzipResponseWriter writes HTTP body data to gzip
 type gzipResponseWriter struct {
 	http.ResponseWriter
 	Writer io.Writer
 }
 
-// Write writes the data to the gzip writer
 func (gzw *gzipResponseWriter) Write(data []byte) (int, error) {
 	return gzw.Writer.Write(data)
 }
 
-// CreateMiddlewareChain creates a chain of middleware based on the configuration
+// CreateMiddlewareChain creates the active forward proxy middleware pipeline
 func CreateMiddlewareChain(handler http.Handler, cfg *config.Config) http.Handler {
 	middlewares := []Middleware{
-		Logger(), // Always include logger middleware
+		Logger(), // 1. Always log client requests
 	}
-	
-	// Add compression middleware
+
+	// 2. Bandwidth optimization via Gzip compression
 	middlewares = append(middlewares, Compress())
-	
-	// Add CORS middleware
-	middlewares = append(middlewares, CORS())
-	
-	// Add rate limiting middleware if max connections is configured
+
+	// 3. Network abuse prevention via IP rate limiting
 	if cfg.MaxConnections > 0 {
-		// Calculate requests per minute based on MaxConnections
-		// This is a simplistic approach - adjust as needed
 		requestsPerMinute := cfg.MaxConnections * 60
 		middlewares = append(middlewares, RateLimit(requestsPerMinute))
 	}
-	
-	// Apply all middlewares to the handler
+
 	return Chain(handler, middlewares...)
 }
 
-// SecurityHeaders adds security-related headers to responses
-func SecurityHeaders() Middleware {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Add security headers
-			w.Header().Set("X-Content-Type-Options", "nosniff")
-			w.Header().Set("X-Frame-Options", "DENY")
-			w.Header().Set("X-XSS-Protection", "1; mode=block")
-			w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-			
-			// Call the next handler
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// RequestID adds a unique ID to each request for tracing
+// RequestID adds a unique ID header to trace requests
 func RequestID() Middleware {
-	var requestID int64 = 0
+	var requestID int64
 	var mu sync.Mutex
-	
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Generate a unique request ID
 			mu.Lock()
 			requestID++
 			id := requestID
 			mu.Unlock()
-			
-			// Add the request ID as a header
-			w.Header().Set("X-Request-ID", fmt.Sprintf("%d", id))
-			
-			// Store the request ID in the context
-			ctx := context.WithValue(r.Context(), "requestID", id)
-			r = r.WithContext(ctx)
-			
-			// Call the next handler
-			next.ServeHTTP(w, r)
-		})
-	}
-}
 
-// RequestTimer measures and logs the time taken to process a request
-func RequestTimer() Middleware {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			start := time.Now()
-			
-			// Call the next handler
-			next.ServeHTTP(w, r)
-			
-			// Calculate and log the duration
-			duration := time.Since(start)
-			log.Printf("Request %s %s took %s", r.Method, r.URL.Path, duration)
+			w.Header().Set("X-Request-ID", fmt.Sprintf("%d", id))
+			ctx := context.WithValue(r.Context(), "requestID", id)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

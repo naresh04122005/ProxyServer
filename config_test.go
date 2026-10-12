@@ -2,7 +2,7 @@ package main
 
 // import "fmt"
 // import "os"
-// import "github.com/Jovial-Kanwadia/proxy-server/config"
+// import ""github.com/naresh04122005/ProxyServer/config"
 
 // func main() {
 // 	// Create a default configuration

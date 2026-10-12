@@ -3,7 +3,7 @@ package main
 // import (
 // 	"fmt"
 // 	"time"
-// 	"github.com/Jovial-Kanwadia/proxy-server/cache"
+// 	"github.com/naresh04122005/ProxyServer/cache"
 // )
 
 // func main() {

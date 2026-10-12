@@ -10,35 +10,33 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Jovial-Kanwadia/proxy-server/cache"
-	"github.com/Jovial-Kanwadia/proxy-server/config"
-	"github.com/Jovial-Kanwadia/proxy-server/proxy"
+	"github.com/naresh04122005/ProxyServer/cache"
+	"github.com/naresh04122005/ProxyServer/config"
+	"github.com/naresh04122005/ProxyServer/proxy"
 )
 
 func main() {
-	// Load configuration
+	// 1. Load configuration
 	cfg := config.NewDefaultConfig()
 	cfg.ParseFlags()
 
-	// Validate configuration
+	// 2. Validate configuration
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Invalid configuration: %v", err)
 	}
 
-	// Print configuration for debugging
+	// Print active configuration
 	fmt.Println(cfg)
 
-	// Create LRU cache
+	// 3. Initialize Thread-Safe LRU Cache
 	lruCache := cache.NewLRUCache(cfg.CacheSize)
-	fmt.Printf("Initialized LRU cache with capacity: %d\n", lruCache.Capacity())
+	fmt.Printf("Initialized LRU cache with capacity: %d items\n", lruCache.Capacity())
 
-	// Create proxy handler
+	// 4. Initialize Proxy Engine and Middleware Chain
 	proxyHandler := proxy.NewProxyHandler(lruCache, cfg)
-	
-	// Apply middleware chain
 	handler := proxy.CreateMiddlewareChain(proxyHandler, cfg)
-	
-	// Create server with timeouts
+
+	// 5. Initialize Production-Grade HTTP Server with Timeouts
 	server := &http.Server{
 		Addr:           fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
 		Handler:        handler,
@@ -48,33 +46,33 @@ func main() {
 		MaxHeaderBytes: cfg.MaxHeaderBytes,
 	}
 
-	// Start server in goroutine to not block
+	// 6. Start server in background goroutine
 	go func() {
-		fmt.Printf("Starting proxy server on %s:%d\n", cfg.Host, cfg.Port)
+		fmt.Printf("🛡️  Forward Proxy Server running on %s:%d\n", cfg.Host, cfg.Port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Error starting server: %v", err)
 		}
 	}()
 
-	// Set up graceful shutdown
+	// 7. Listen for OS interrupt signals (SIGINT / SIGTERM)
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
-	// Wait for interrupt signal
+	// Wait for shutdown signal (Ctrl + C)
 	<-stop
-	fmt.Println("Shutting down server...")
+	fmt.Println("\nReceived shutdown signal. Stopping gracefully...")
 
-	// Create shutdown context with timeout
+	// Create 5-second timeout window to drain active requests
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Shutdown the proxy handler (which will stop the worker pool)
-	proxyHandler.Shutdown()
-
-	// Shutdown server
+	// Step A: Stop accepting new requests and drain active connections
 	if err := server.Shutdown(ctx); err != nil {
 		log.Fatalf("Error during server shutdown: %v", err)
 	}
 
-	fmt.Println("Server gracefully stopped")
+	// Step B: Safely terminate background workers and release pool
+	proxyHandler.Shutdown()
+
+	fmt.Println("Server gracefully stopped. Goodbye!")
 }

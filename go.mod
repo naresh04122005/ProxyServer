@@ -1,3 +1,3 @@
-module github.com/Jovial-Kanwadia/proxy-server
+module github.com/naresh04122005/ProxyServer
 
 go 1.23

@@ -8,54 +8,48 @@ import (
 
 // LRUCache is a thread-safe LRU cache implementation
 type LRUCache struct {
-	capacity    int
-	evictions   int64
-	hits        int64
-	misses      int64
-	totalSize   int
-	items       map[string]*list.Element
+	capacity     int
+	evictions    int64
+	hits         int64
+	misses       int64
+	totalSize    int
+	items        map[string]*list.Element
 	evictionList *list.List
-	mutex       sync.RWMutex
+	mutex        sync.RWMutex
 }
 
 // NewLRUCache creates a new LRU cache with the given capacity
 func NewLRUCache(capacity int) *LRUCache {
 	return &LRUCache{
-		capacity:    capacity,
-		items:       make(map[string]*list.Element),
+		capacity:     capacity,
+		items:        make(map[string]*list.Element),
 		evictionList: list.New(),
 	}
 }
 
-// Get retrieves an item from the cache
+// Get retrieves an item from the cache and updates its LRU position
 func (c *LRUCache) Get(key string) (*CacheItem, bool) {
-	c.mutex.RLock()
-	element, exists := c.items[key]
-	c.mutex.RUnlock()
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
+	element, exists := c.items[key]
 	if !exists {
-		c.mutex.Lock()
 		c.misses++
-		c.mutex.Unlock()
 		return nil, false
 	}
 
 	item := element.Value.(*CacheItem)
 
-	// Check if the item has expired
+	// Check if the item has expired (Passive TTL eviction)
 	if !item.ExpiresAt.IsZero() && time.Now().After(item.ExpiresAt) {
-		c.mutex.Lock()
 		c.evictElement(element)
 		c.misses++
-		c.mutex.Unlock()
 		return nil, false
 	}
 
 	// Move to front (most recently used)
-	c.mutex.Lock()
 	c.evictionList.MoveToFront(element)
 	c.hits++
-	c.mutex.Unlock()
 
 	return item, true
 }
@@ -122,7 +116,7 @@ func (c *LRUCache) Clear() {
 	c.items = make(map[string]*list.Element)
 	c.evictionList = list.New()
 	c.totalSize = 0
-	// Don't reset statistics
+	// Statistics are preserved
 }
 
 // Size returns the current number of items in the cache

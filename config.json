@@ -1,9 +1,15 @@
 {
-    "port": 8081,
-    "host": "localhost",
-    "cache_size": 2048,
-    "cache_ttl": 7200,
-    "proxy_timeout": 60,
-    "allowed_domains": ["example.com", "httpbin.org"],
-    "max_connections": 200
+  "port": 8080,
+  "host": "localhost",
+  "cache_size": 2048,
+  "cache_ttl": 3600,
+  "proxy_timeout": 30,
+  "allowed_domains": [],
+  "blocked_domains": [
+    "torrent.com",
+    "gambling.com",
+    "malicious-site.com"
+  ],
+  "max_connections": 100,
+  "log_level": "info"
 }

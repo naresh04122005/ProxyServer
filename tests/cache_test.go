@@ -1,10 +1,10 @@
 package tests
 
 import (
+	"fmt"
 	"testing"
 	"time"
-	"fmt"
-	"github.com/Jovial-Kanwadia/proxy-server/cache"
+	"github.com/naresh04122005/ProxyServer/cache"
 )
 
 func TestLRUCache_BasicOperations(t *testing.T) {
